@@ -1,0 +1,7 @@
+node_modules
+.env
+campus.db
+campus.db-journal
+campus.db-wal
+campus.db-shm
+uploads
