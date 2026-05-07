@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db.js";
-import { authRequired } from "../middleware/auth.js";
+import { authRequired, notSuspended } from "../middleware/auth.js";
+import { applyModeration } from "../lib/moderation.js";
 
 export function buildMessagesRouter(io, userSockets) {
   const router = Router();
@@ -44,12 +45,15 @@ export function buildMessagesRouter(io, userSockets) {
     res.json({ messages: rows.map((m) => ({ ...m, is_read: !!m.is_read })) });
   });
 
-  router.post("/", authRequired, async (req, res) => {
+  router.post("/", authRequired, notSuspended, async (req, res) => {
     const { recipient_id, content } = req.body || {};
     if (!recipient_id || !content || !content.trim())
       return res.status(400).json({ error: "recipient_id and content required" });
     if (Number(recipient_id) === req.userId)
       return res.status(400).json({ error: "Cannot message yourself" });
+
+    const moderation = await applyModeration(req.userId, content);
+    if (moderation.blocked) return res.status(moderation.status).json(moderation.body);
 
     const recipient = await db.prepare("SELECT id FROM users WHERE id = ?").get(recipient_id);
     if (!recipient) return res.status(404).json({ error: "Recipient not found" });

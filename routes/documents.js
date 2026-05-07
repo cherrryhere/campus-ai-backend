@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import db from "../db.js";
-import { authRequired } from "../middleware/auth.js";
+import { authRequired, adminRequired } from "../middleware/auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadDir = path.join(__dirname, "..", "uploads");
@@ -33,7 +33,7 @@ router.get("/", authRequired, async (_req, res) => {
   res.json({ documents: rows });
 });
 
-router.post("/", authRequired, upload.single("file"), async (req, res) => {
+router.post("/", authRequired, adminRequired, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "PDF file required" });
   const { title, category } = req.body || {};
   if (!title) return res.status(400).json({ error: "Title required" });

@@ -11,7 +11,7 @@ router.get("/", authRequired, async (req, res) => {
     const like = `%${q}%`;
     rows = await db
       .prepare(
-        `SELECT id, name, email, branch, year, interests
+        `SELECT id, name, email, branch, year, interests, avatar_path
          FROM users
          WHERE id != ? AND (name LIKE ? OR branch LIKE ? OR interests LIKE ?)
          ORDER BY name LIMIT 100`
@@ -20,7 +20,7 @@ router.get("/", authRequired, async (req, res) => {
   } else {
     rows = await db
       .prepare(
-        `SELECT id, name, email, branch, year, interests
+        `SELECT id, name, email, branch, year, interests, avatar_path
          FROM users WHERE id != ? ORDER BY created_at DESC LIMIT 100`
       )
       .all(req.userId);
@@ -30,15 +30,12 @@ router.get("/", authRequired, async (req, res) => {
     .prepare("SELECT following_id FROM follows WHERE follower_id = ?")
     .all(req.userId);
   const followingSet = new Set(followingRows.map((r) => r.following_id));
-
-  res.json({
-    users: rows.map((u) => ({ ...u, is_following: followingSet.has(u.id) })),
-  });
+  res.json({ users: rows.map((u) => ({ ...u, is_following: followingSet.has(u.id) })) });
 });
 
 router.get("/:id", authRequired, async (req, res) => {
   const user = await db
-    .prepare("SELECT id, name, email, branch, year, interests, bio, created_at FROM users WHERE id = ?")
+    .prepare("SELECT id, name, email, branch, year, interests, bio, avatar_path, is_admin, is_suspended, created_at FROM users WHERE id = ?")
     .get(req.params.id);
   if (!user) return res.status(404).json({ error: "Not found" });
 
@@ -54,11 +51,41 @@ router.get("/:id", authRequired, async (req, res) => {
     .all(user.id);
 
   res.json({
-    user,
+    user: { ...user, is_admin: !!user.is_admin, is_suspended: !!user.is_suspended },
     counts: { followers: followers.c, following: following.c, posts: posts.c },
     is_following: isFollowing,
     posts: userPosts.map((p) => ({ ...p, pinned: !!p.pinned, tags: p.tags ? JSON.parse(p.tags) : [] })),
   });
+});
+
+router.get("/:id/followers", authRequired, async (req, res) => {
+  const rows = await db
+    .prepare(
+      `SELECT u.id, u.name, u.branch, u.year, u.avatar_path
+       FROM follows f JOIN users u ON u.id = f.follower_id
+       WHERE f.following_id = ? ORDER BY f.created_at DESC LIMIT 200`
+    )
+    .all(req.params.id);
+  const myFollowing = await db
+    .prepare("SELECT following_id FROM follows WHERE follower_id = ?")
+    .all(req.userId);
+  const followingSet = new Set(myFollowing.map((r) => r.following_id));
+  res.json({ users: rows.map((u) => ({ ...u, is_following: followingSet.has(u.id) })) });
+});
+
+router.get("/:id/following", authRequired, async (req, res) => {
+  const rows = await db
+    .prepare(
+      `SELECT u.id, u.name, u.branch, u.year, u.avatar_path
+       FROM follows f JOIN users u ON u.id = f.following_id
+       WHERE f.follower_id = ? ORDER BY f.created_at DESC LIMIT 200`
+    )
+    .all(req.params.id);
+  const myFollowing = await db
+    .prepare("SELECT following_id FROM follows WHERE follower_id = ?")
+    .all(req.userId);
+  const followingSet = new Set(myFollowing.map((r) => r.following_id));
+  res.json({ users: rows.map((u) => ({ ...u, is_following: followingSet.has(u.id) })) });
 });
 
 router.post("/:id/follow", authRequired, async (req, res) => {

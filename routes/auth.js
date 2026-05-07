@@ -2,8 +2,31 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import db from "../db.js";
 import { authRequired } from "../middleware/auth.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const avatarDir = path.join(__dirname, "..", "uploads", "avatars");
+if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir, { recursive: true });
+
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, avatarDir),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || ".png";
+      cb(null, `u${req.userId}_${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
+  },
+});
 
 const router = Router();
 
@@ -18,6 +41,9 @@ const publicUser = (u) => ({
   year: u.year,
   interests: u.interests,
   bio: u.bio,
+  avatar_path: u.avatar_path,
+  warnings: u.warnings || 0,
+  is_suspended: !!u.is_suspended,
   is_admin: !!u.is_admin,
 });
 
@@ -30,10 +56,14 @@ router.post("/signup", async (req, res) => {
   const exists = await db.prepare("SELECT id FROM users WHERE email = ?").get(normEmail);
   if (exists) return res.status(409).json({ error: "Email already registered" });
 
+  // First user becomes admin automatically
+  const count = await db.prepare("SELECT COUNT(*) AS c FROM users").get();
+  const isFirst = (count?.c || 0) === 0;
+
   const hash = await bcrypt.hash(password, 10);
   const info = await db
-    .prepare("INSERT INTO users (name, email, password, branch, year, interests) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(name.trim(), normEmail, hash, branch || null, year || null, interests || null);
+    .prepare("INSERT INTO users (name, email, password, branch, year, interests, is_admin) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(name.trim(), normEmail, hash, branch || null, year || null, interests || null, isFirst ? 1 : 0);
 
   const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(info.lastInsertRowid);
   res.json({ token: sign(user), user: publicUser(user) });
@@ -67,6 +97,17 @@ router.put("/me", authRequired, async (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+router.post("/avatar", authRequired, avatarUpload.single("avatar"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Image required" });
+  const existing = await db.prepare("SELECT avatar_path FROM users WHERE id = ?").get(req.userId);
+  if (existing?.avatar_path) {
+    try { fs.unlinkSync(path.join(avatarDir, existing.avatar_path)); } catch { /* noop */ }
+  }
+  await db.prepare("UPDATE users SET avatar_path = ? WHERE id = ?").run(req.file.filename, req.userId);
+  const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.userId);
+  res.json({ user: publicUser(user) });
+});
+
 router.post("/change-password", authRequired, async (req, res) => {
   const { oldPassword, newPassword } = req.body || {};
   if (!oldPassword || !newPassword) return res.status(400).json({ error: "Missing fields" });
@@ -92,7 +133,6 @@ router.post("/forgot-password", async (req, res) => {
   await db
     .prepare("INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)")
     .run(token, user.id, expires);
-
   res.json({ ok: true, token });
 });
 
@@ -101,15 +141,12 @@ router.post("/reset-password", async (req, res) => {
   if (!token || !password) return res.status(400).json({ error: "Missing fields" });
   if (password.length < 6) return res.status(400).json({ error: "Password too short" });
 
-  const row = await db
-    .prepare("SELECT * FROM password_reset_tokens WHERE token = ?")
-    .get(token);
+  const row = await db.prepare("SELECT * FROM password_reset_tokens WHERE token = ?").get(token);
   if (!row) return res.status(400).json({ error: "Invalid token" });
   if (new Date(row.expires_at).getTime() < Date.now()) {
     await db.prepare("DELETE FROM password_reset_tokens WHERE token = ?").run(token);
     return res.status(400).json({ error: "Token expired" });
   }
-
   const hash = await bcrypt.hash(password, 10);
   await db.prepare("UPDATE users SET password = ? WHERE id = ?").run(hash, row.user_id);
   await db.prepare("DELETE FROM password_reset_tokens WHERE token = ?").run(token);

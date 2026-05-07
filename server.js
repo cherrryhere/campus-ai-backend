@@ -2,8 +2,12 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import http from "http";
+import path from "path";
+import { fileURLToPath } from "url";
 import { Server as SocketIOServer } from "socket.io";
 import jwt from "jsonwebtoken";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import db, { initDb } from "./db.js";
 import authRoutes from "./routes/auth.js";
@@ -29,6 +33,8 @@ const io = new SocketIOServer(server, { cors: { origin: CLIENT_ORIGIN } });
 
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
+app.use("/uploads/avatars", express.static(path.join(__dirname, "uploads", "avatars")));
+app.use("/uploads/posts", express.static(path.join(__dirname, "uploads", "posts")));
 
 const userSockets = new Map();
 

@@ -13,6 +13,9 @@ const TABLES = [
     year VARCHAR(50),
     interests VARCHAR(500),
     bio VARCHAR(500),
+    avatar_path VARCHAR(500),
+    warnings INT DEFAULT 0,
+    is_suspended TINYINT(1) DEFAULT 0,
     is_admin TINYINT(1) DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB`,
@@ -29,6 +32,7 @@ const TABLES = [
     author_id INT NOT NULL,
     content TEXT NOT NULL,
     tags VARCHAR(500),
+    image_path VARCHAR(500),
     pinned TINYINT(1) DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
@@ -109,6 +113,37 @@ const TABLES = [
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS chat_conversations (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    title VARCHAR(255),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_chat_conv_user (user_id, updated_at)
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS chat_messages (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    conversation_id INT NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    source VARCHAR(255),
+    related_json TEXT,
+    attachment_name VARCHAR(255),
+    powered_by VARCHAR(20),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    INDEX idx_chat_msg_conv (conversation_id, created_at)
+  ) ENGINE=InnoDB`,
+];
+
+// idempotent ALTERs for existing databases
+const ALTERS = [
+  "ALTER TABLE users ADD COLUMN avatar_path VARCHAR(500)",
+  "ALTER TABLE users ADD COLUMN warnings INT DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN is_suspended TINYINT(1) DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN bio VARCHAR(500)",
+  "ALTER TABLE posts ADD COLUMN image_path VARCHAR(500)",
 ];
 
 export async function initDb() {
@@ -120,7 +155,6 @@ export async function initDb() {
     waitForConnections: true,
     connectionLimit: 10,
     timezone: "Z",
-    multipleStatements: false,
   };
   const dbName = process.env.MYSQL_DATABASE || "campus_ai";
 
@@ -129,7 +163,28 @@ export async function initDb() {
   await bootstrap.end();
 
   pool = mysql.createPool({ ...baseConfig, database: dbName });
+  // Force every connection to write/read DATETIME values in UTC so the frontend
+  // can convert reliably to the viewer's local timezone (e.g., IST).
+  // The pool's "connection" event hands back a raw (callback-style) Connection,
+  // so we use the callback form here to avoid "tried to call .catch on a non-promise".
+  pool.on("connection", (conn) => {
+    conn.query("SET SESSION time_zone = '+00:00'", () => {});
+  });
+  await pool.query("SET SESSION time_zone = '+00:00'");
   for (const sql of TABLES) await pool.query(sql);
+  for (const sql of ALTERS) {
+    try { await pool.query(sql); } catch { /* column already exists */ }
+  }
+
+  // Auto-promote first user to admin if no admin exists yet
+  const [admins] = await pool.query("SELECT COUNT(*) AS c FROM users WHERE is_admin = 1");
+  if (admins[0].c === 0) {
+    const [first] = await pool.query("SELECT id, email FROM users ORDER BY id ASC LIMIT 1");
+    if (first[0]) {
+      await pool.query("UPDATE users SET is_admin = 1 WHERE id = ?", [first[0].id]);
+      console.log(`First admin auto-promoted: ${first[0].email} (id=${first[0].id})`);
+    }
+  }
 
   console.log(`MySQL connected: ${baseConfig.user}@${baseConfig.host}:${baseConfig.port}/${dbName}`);
 }
